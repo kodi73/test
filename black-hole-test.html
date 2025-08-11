@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Black Hole — Two-layer canvas (preserve stars)</title>
+<style>
+  html,body { height:100%; margin:0; background:#000; overflow:hidden; }
+  .layer {
+    position:fixed;
+    top:0; left:0;
+    width:100vw; height:100vh;
+    display:block;
+    pointer-events:none; /* allows clicks to pass through if needed */
+  }
+  /* optionally show pointer-events on fg to allow interaction */
+</style>
+</head>
+<body>
+<canvas id="bg" class="layer"></canvas>
+<canvas id="fg" class="layer"></canvas>
+
+<script>
+/* ---------------------------
+   Configuration / constants
+   --------------------------- */
+const bg = document.getElementById('bg');
+const fg = document.getElementById('fg');
+const bgCtx = bg.getContext('2d');
+const fgCtx = fg.getContext('2d');
+
+function resize() {
+  bg.width = fg.width = innerWidth;
+  bg.height = fg.height = innerHeight;
+  center.x = bg.width/2; center.y = bg.height/2;
+}
+window.addEventListener('resize', resize);
+
+const center = { x: innerWidth/2, y: innerHeight/2 };
+let blackHoleRadius = 50;
+let blackHoleGrowing = false;
+const NUM_STARS = 300;
+
+/* ---------------------------
+   Starfield (background)
+   --------------------------- */
+let stars = [];
+function initStars() {
+  stars = [];
+  for (let i=0;i<NUM_STARS;i++){
+    // Distribute stars across canvas with varying distances
+    const x = Math.random()*innerWidth;
+    const y = Math.random()*innerHeight;
+    const dx = x - center.x;
+    const dy = y - center.y;
+    const dist = Math.hypot(dx, dy);
+    stars.push({
+      x, y,
+      angle: Math.atan2(dy, dx),
+      dist,
+      size: 0.6 + Math.random()*1.6,
+      tw: Math.random()*Math.PI*2,
+      baseSpeed: 0.01 + Math.random()*0.06 // will be scaled by distance
+    });
+  }
+}
+
+/* draw stars onto bgCtx */
+function drawStarsBg() {
+  // Clear bg canvas (use fillRect black)
+  bgCtx.fillStyle = '#000';
+  bgCtx.fillRect(0,0,bg.width,bg.height);
+
+  for (let s of stars) {
+    // Twinkle alpha
+    const a = 0.4 + 0.6 * (0.5 + 0.5 * Math.sin(s.tw));
+    bgCtx.fillStyle = `rgba(255,255,255,${a})`;
+    bgCtx.beginPath();
+    bgCtx.arc(center.x + s.dist * Math.cos(s.angle), center.y + s.dist * Math.sin(s.angle), s.size, 0, Math.PI*2);
+    bgCtx.fill();
+  }
+}
+
+/* update star positions (spiral in when blackHoleGrowing) */
+function updateStars(delta) {
+  for (let s of stars) {
+    // twinkle progression
+    s.tw += 0.04 * delta;
+
+    if (blackHoleGrowing) {
+      // gravitational influence increases as distance decreases
+      const gravityFactor = Math.max(0.02, 200 / (s.dist+1)); // bigger when close
+      s.angle += s.baseSpeed * gravityFactor * 0.8 * delta;      // rotate faster near BH
+      s.dist -= 0.25 * gravityFactor * delta;                    // spiral inward
+    } else {
+      // gentle slow orbit so scene isn't static
+      s.angle += s.baseSpeed * 0.02 * delta;
+    }
+  }
+  // Remove stars that have fallen inside event horizon (so they disappear)
+  stars = stars.filter(s => s.dist > blackHoleRadius + 0.5);
+}
+
+/* ---------------------------
+   Foreground (accretion disk, lensing, event horizon)
+   --------------------------- */
+
+/* draw accretion disk — multi-layer stroked arcs for smooth glow */
+function drawAccretionDisk() {
+  const inner = blackHoleRadius + 12;
+  const outer = blackHoleRadius + 46;
+
+  // draw multiple concentric strokes with gradients to build soft disk
+  for (let i=0;i<4;i++){
+    const t = i/3;
+    const r = inner + (outer-inner)*t;
+    const width = 18 - i*3;
+
+    const g = fgCtx.createLinearGradient(center.x - r, center.y, center.x + r, center.y);
+    // blend blueshift -> white -> redshift
+    g.addColorStop(0, `rgba(${Math.floor(20*(1-t))},${Math.floor(180*(1-t)+50*t)},255,${0.9 - 0.12*i})`);
+    g.addColorStop(0.5, `rgba(255,${220 - i*20},${180 - i*12},${0.95 - 0.12*i})`);
+    g.addColorStop(1, `rgba(255,${120 + i*20},${20 + i*10},${0.9 - 0.12*i})`);
+
+    fgCtx.lineWidth = width;
+    fgCtx.strokeStyle = g;
+    fgCtx.beginPath();
+    // slight ellipse to simulate warp; rotate slowly globally by time
+    const rx = r;
+    const ry = r * 0.28;
+    fgCtx.ellipse(center.x, center.y, rx, ry, accretionAngle, 0, Math.PI*2);
+    fgCtx.stroke();
+  }
+}
+
+/* apply lensing: draw scaled copies of bg into annular rings on fg */
+function applyLensing() {
+  // we will create a set of annular rings from radius (blackHoleRadius+1) -> (blackHoleRadius + lensMax)
+  const lensMax = Math.min(Math.max(150, blackHoleRadius*3), Math.max(bg.width,bg.height)); // max lens radius
+  const rings = 12; // number of rings (higher -> smoother but slower)
+  for (let i=0;i<rings;i++){
+    const t0 = i / rings;
+    const t1 = (i+1) / rings;
+    const r0 = blackHoleRadius + 1 + t0 * (lensMax - (blackHoleRadius+1));
+    const r1 = blackHoleRadius + 1 + t1 * (lensMax - (blackHoleRadius+1));
+
+    // clip to this annulus
+    fgCtx.save();
+    fgCtx.beginPath();
+    fgCtx.arc(center.x, center.y, r1, 0, Math.PI*2);
+    fgCtx.arc(center.x, center.y, r0, 0, Math.PI*2, true);
+    fgCtx.clip();
+
+    // choose a scale factor that increases as we get closer (nonlinear)
+    // closer rings get larger scale -> apparent bending outward
+    const normalized = 1 - (r0 - (blackHoleRadius+1)) / (lensMax - (blackHoleRadius+1)); // 0..1
+    const scale = 1 + 0.25 * Math.pow(normalized, 1.8); // tweak exponent for visual
+    // draw bg onto fg with transform around center to create warp
+    fgCtx.translate(center.x, center.y);
+    fgCtx.scale(scale, scale);
+    fgCtx.translate(-center.x, -center.y);
+    fgCtx.drawImage(bg, 0, 0);
+    // restore transforms and clipping
+    fgCtx.restore();
+  }
+}
+
+/* draw pure black event horizon last (overwrites everything inside it) */
+function drawEventHorizon() {
+  fgCtx.save();
+  fgCtx.globalCompositeOperation = 'source-over';
+  fgCtx.fillStyle = '#000000'; // pure black
+  fgCtx.beginPath();
+  fgCtx.arc(center.x, center.y, blackHoleRadius, 0, Math.PI*2);
+  fgCtx.fill();
+  fgCtx.restore();
+}
+
+/* ---------------------------
+   Animation loop & control
+   --------------------------- */
+let last = performance.now();
+let accretionAngle = 0;
+function loop(now){
+  const delta = (now - last) / 16.67; // ~frames unit (1 = 60fps tick)
+  last = now;
+
+  // update background stars positions first, then redraw bg
+  updateStars(delta);
+  drawStarsBg();
+
+  // clear foreground and draw disk + lensing + horizon
+  fgCtx.clearRect(0,0,fg.width,fg.height);
+
+  // slowly rotate accretion disk
+  accretionAngle += 0.006 * delta;
+  drawAccretionDisk();
+
+  // use the background image to create lensing warp on foreground
+  applyLensing();
+
+  // event horizon MUST be drawn last and solid black
+  drawEventHorizon();
+
+  // grow black hole if active
+  if (blackHoleGrowing){
+    blackHoleRadius += 0.6 * delta; // growth rate (tweakable)
+    // stop condition: when black hole radius large enough to cover screen diagonal
+    const maxRadius = Math.hypot(bg.width, bg.height) * 0.6;
+    if (blackHoleRadius > maxRadius){
+      // fill everything black and stop
+      bgCtx.fillStyle = '#000'; bgCtx.fillRect(0,0,bg.width,bg.height);
+      fgCtx.fillStyle = '#000'; fgCtx.fillRect(0,0,fg.width,fg.height);
+      return;
+    }
+  }
+
+  requestAnimationFrame(loop);
+}
+
+/* ---------------------------
+   Start
+   --------------------------- */
+resize();
+initStars();
+drawStarsBg();
+
+// Demo: trigger black hole growth after 2s (replace with actual divide-by-zero trigger)
+setTimeout(()=> { blackHoleGrowing = true; }, 2000);
+
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
